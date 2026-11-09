@@ -1,0 +1,48 @@
+# Compatibility and platform matrix
+
+This matrix records supported versions separately from locally recorded acceptance evidence. A host upgrade does not become a complete live-verified baseline until its relevant package and provider checks pass.
+
+## Runtime and host applications
+
+| Component | Verified or required version | Status |
+|---|---|---|
+| Windows | Windows 10 or later | Required for the supported installer and PowerShell lifecycle |
+| Node.js | 22.22.2 or later | Required for source development; public packages bundle the tested runtime |
+| Windows PowerShell | 5.1 or later | Required for release install, upgrade, verification, and uninstall |
+| Streamer.bot | Minimum and recommended `1.0.7` stable; exact `1.1.0-alpha.3` through `1.1.0-alpha.6` and `1.1.0-alpha.10` schemas embedded | All regenerated THSV package manifests retain stable 1.0.7 as their installation floor. Automated trigger repair is write-enabled only for exact embedded registries or a provenance-verified compatibility-data alias. The creator host's alpha.11 saved actions schema matched its pre-update backup across all 34 managed triggers, but alpha.11 remains inspection-only until its data-only feed is published and verified. Source and automated compatibility checks cover the EventSub chat migration and keep the relay isolated from raw provider WebSocket payloads; repeat the focused live matrix before recording provider acceptance for an alpha host. |
+| Speaker.bot | `0.1.7` | Live transport/dry-run verified; playback completion acknowledgement is unavailable |
+| Meld Studio | `0.10.3.1` | Live Browser Source verification for Chat, Alerts, and Companion-compatible routes |
+| OBS Studio | Exact accepted build was not recorded | Live standards-based Browser Source verification completed July 16, 2026 |
+| Streamlabs Desktop | Exact build not separately tested | Compatibility accepted through the same Browser Source contract after OBS verification |
+
+Self-check after a Streamer.bot update: when Streamer.bot reports a version with no tested registry, StreamBridge checks the installed actions against the newest tested version on the same line (for example alpha.17 against alpha.15). Trigger repair is turned on for the new version only if every required THSV action and trigger is installed once, enabled and readable exactly as in that tested version. The result is saved in `state/streamerbot-self-verified-versions.json` and logged. If anything differs, repair stays off, the wizard says which actions differ, and StreamBridge checks again each time. A new major or minor line (such as 1.2.0) always waits for a StreamBridge update.
+
+Compile check: `tools/check-streamerbot-actions-compile.ps1 -StreamerBot <Streamer.bot folder>` compiles every THSV C# action with that Streamer.bot's own bundled compiler and libraries, read-only. Run it against the stable 1.0.7 floor and the newest alpha before a release. On 2026-10-31 all 85 actions compiled on both Streamer.bot 1.0.7 stable and 1.1.0-alpha.17.
+
+Do not infer a future version range from verified alpha builds. Current packages use stable 1.0.7 as their common installation floor, while the rollback-protected trigger reconciler recognizes only exact tested registries. The 1.1.0-alpha.3 registry came from a sanitized capture of the creator host's three THSV intake actions and all 29 managed trigger records; the installed alpha.4 database was then compared read-only and matched that exact schema. For alpha.5, the creator host's imported database was compared read-only against the pre-import alpha.4 backup. The creator host's automatic pre-upgrade alpha.5 and post-upgrade alpha.6 backups were then compared read-only: top-level keys, action-object keys, managed action IDs, enabled states, trigger-record keys, and all 29 trigger types matched. Alpha.10 was separately embedded after exact-schema validation. The alpha.11 data-only alias is documented in [its evidence record](archive/streamerbot-1.1.0-alpha.11.md). Unknown future builds fail closed. After upgrading Streamer.bot, compile every installed THSV C# action, repeat relay tests, verify Action History fields, validate the saved actions schema, and then update the live-verification record. Re-import the current versioned packages when replacing an older baseline export.
+
+StreamBridge can also consume the bounded `THSV-StreamBridge-StreamerBot-Compatibility.json` data asset from a dedicated `streamerbot-compat-*` GitHub release. The client accepts that feed only after Sigstore verification proves tagged GitHub Actions provenance from this repository's dedicated compatibility workflow. Feed entries can add an exact version alias only to a registry already embedded or previously verified; malformed, unattested, oversized, unknown-base, or unavailable feeds fail closed and leave the embedded registries active. This permits a separately reviewed compatibility-data release without shipping a new Bridge binary.
+
+The September 22 alpha.12 compatibility-data candidate is documented in [its evidence record](archive/streamerbot-1.1.0-alpha.12.md). Its complete pre/post-upgrade actions database matched after excluding only the save timestamp. Like alpha.11, it requires verified feed delivery before installed trigger repair is enabled.
+
+The Wizard reports the official feed source and last check, plus the verified tag and SHA-256 digest when available. When remote verification is unavailable, it clearly labels the embedded exact registry that remains active.
+
+See [Streamer.bot 1.1.0 alpha.6 compatibility](archive/streamerbot-1.1.0-alpha.6.md) for the latest exact-version evidence and remaining live acceptance boundary, and [Streamer.bot 1.0.7 stable adoption](archive/streamerbot-1.0.7-stable.md) for the recommended stable baseline. The [alpha.5](archive/streamerbot-1.1.0-alpha.5.md), [1.0.6](archive/streamerbot-1.0.6-stable.md), [1.0.5 stable](archive/streamerbot-1.0.5-stable.md), [beta.5](archive/streamerbot-1.0.5-beta.5.md), and [beta.2](archive/streamerbot-1.0.5-beta.2.md) records remain historical evidence rather than current install guidance.
+
+Streamer.bot 1.0.5 removed the deprecated legacy Twitch WebSocket `Message` object as chat completed its move to EventSub. THSV's native intake consumes bounded flat action arguments (`message`, IDs, user fields, badges, and flags) rather than that legacy object or raw provider WebSocket envelopes. This also limits exposure to the provider-payload changes documented for 1.1.0 alpha, but genuine Twitch events must still be repeated before claiming live provider acceptance.
+
+Meld Studio is distributed as an MSIX/UWP app, which Windows sandboxes with loopback isolation by default; this blocks access to the local overlay and wizard URLs until an exemption is granted once per machine. See [Troubleshooting](troubleshooting.md#meld-studio-cannot-reach-the-overlay-or-wizard) for the fix. The same restriction can affect other MSIX-packaged broadcasting apps.
+
+## Platform transports
+
+| Platform | Intake path | Production claim |
+|---|---|---|
+| Twitch | Streamer.bot native trigger relay | Supported through the included relay package; no direct API adapter |
+| YouTube | Streamer.bot native trigger relay | Supported through the included relay package; no direct API adapter |
+| Kick | Streamer.bot native trigger relay | Supported through the included relay package; no direct API adapter |
+| TikTok | TikFinity to Streamer.bot relay | Framework routing supported; stable source identity and simulator provenance remain unverified, so rewards/statistics default conservative |
+| Facebook | Direct Graph API connection from the wizard (**Platforms > Facebook Page**) using a creator-supplied Page access token | Experimental: live comments, follower/Page-like total milestones, and opt-in timed Page comments. Not yet live-provider accepted; see [Facebook Page comments](facebook-page-comments.md) |
+
+## Optional modules
+
+The Node bridge is distributed as one modular service. Streamer.bot integration is also modular: Core Receiver is required for bridge delivery; Multi-Chat, Multi-Commands, Multi-Alerts, Multi-Timed Actions, native platform intake, and TikFinity intake are separate packages creators import only when needed. Speaker Orchestration, Viewer Progression, and Bloom Companion are archived future add-on candidates and are not shipped or loaded by core.
