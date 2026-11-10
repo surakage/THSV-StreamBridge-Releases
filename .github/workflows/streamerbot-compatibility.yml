@@ -1,0 +1,64 @@
+name: Publish Streamer.bot compatibility data
+
+# Publishes the Streamer.bot compatibility list from the source repository's main branch as a
+# small, attested data-only release. StreamBridge downloads it on start and checks the signature
+# came from this workflow on main, so new Streamer.bot versions work without a StreamBridge update.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact Streamer.bot version this update adds (for example 1.1.0-alpha.17). It must be in packages/streamerbot/compatibility-feed.json on main.
+        required: true
+        type: string
+
+concurrency:
+  group: streamerbot-compatibility
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  SOURCE_REPOSITORY: surakage/THSV-StreamBridge
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the version and the source access key
+        env:
+          SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+)?$ ]]; then echo 'Version must look like 1.0.7 or 1.1.0-alpha.17.' >&2; exit 1; fi
+          if [ -z "$SOURCE_REPO_TOKEN" ]; then echo 'Add the SOURCE_REPO_TOKEN secret (read-only access to the source repository).' >&2; exit 1; fi
+      - name: Check out the source main branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          ref: main
+          persist-credentials: false
+          sparse-checkout: packages/streamerbot/compatibility-feed.json
+          sparse-checkout-cone-mode: false
+      - name: Validate the compatibility list
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('packages/streamerbot/compatibility-feed.json','utf8'));if(p.schemaVersion!==1||!Array.isArray(p.versions)||p.versions.length<1||p.versions.length>32)throw new Error('invalid feed');for(const v of p.versions){if(!/^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/.test(v.version)||!/^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/.test(v.baseVersion))throw new Error('invalid exact version')}if(!p.versions.some(v=>v.version===process.env.VERSION))throw new Error('The version is not in the compatibility list on main.')"
+          cp packages/streamerbot/compatibility-feed.json THSV-StreamBridge-StreamerBot-Compatibility.json
+      - name: Attest the compatibility list
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: THSV-StreamBridge-StreamerBot-Compatibility.json
+      - name: Publish the data-only release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="streamerbot-compat-${VERSION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then tag="${tag}.$(date -u +%Y%m%d%H%M)"; fi
+          gh release create "$tag" THSV-StreamBridge-StreamerBot-Compatibility.json --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+            --title "Streamer.bot compatibility ${VERSION}" \
+            --notes "Data-only update to the list of Streamer.bot versions StreamBridge supports. No StreamBridge update is needed."
