@@ -1,0 +1,69 @@
+name: Publish app.slothbloom.com pages
+
+# Rebuilds app-site/public from a release tag of the source repository and commits it to main.
+# Cloudflare then deploys app.slothbloom.com from this repository. Run it after publishing a release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing source tag whose pages to publish (for example v4.1.78)
+        required: true
+        type: string
+
+concurrency:
+  group: publish-app-site
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  SOURCE_REPOSITORY: surakage/THSV-StreamBridge
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: streambridge-release
+      url: https://app.slothbloom.com/
+    steps:
+      - name: Validate the selected release tag
+        run: |
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then echo 'Invalid release tag.'; exit 1; fi
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          path: site-repo
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          ref: ${{ env.RELEASE_TAG }}
+          path: source
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+      - name: Build the pages
+        run: |
+          cp site-repo/app-site/public/404.html "$RUNNER_TEMP/404.html"
+          node source/scripts/build-site-bundle.mjs "$GITHUB_WORKSPACE/site-repo/app-site/public"
+          cp "$RUNNER_TEMP/404.html" site-repo/app-site/public/404.html
+          test -f site-repo/app-site/public/wizard/hosted.js
+          test -f site-repo/app-site/public/_headers
+      - name: Commit the pages
+        working-directory: site-repo
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A app-site/public
+          if git diff --cached --quiet; then echo 'The pages are already up to date.'; exit 0; fi
+          git commit -m "Publish app.slothbloom.com pages for $RELEASE_TAG"
+          git push origin HEAD:main

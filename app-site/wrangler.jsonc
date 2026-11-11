@@ -1,0 +1,16 @@
+{
+  // app.slothbloom.com: the StreamBridge pages as plain files. There is no server code here.
+  // Cloudflare builds this folder on every push to main (Workers Builds, root directory: app-site).
+  "name": "streambridge-app",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "404-page"
+  },
+  "routes": [
+    { "pattern": "app.slothbloom.com", "custom_domain": true }
+  ],
+  // The pages must only ever be reached at app.slothbloom.com, the one address StreamBridge accepts.
+  "workers_dev": false,
+  "preview_urls": false
+}

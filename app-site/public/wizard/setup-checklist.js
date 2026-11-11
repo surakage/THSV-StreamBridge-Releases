@@ -1,0 +1,317 @@
+// Setup checklist: one read-only list of what each enabled feature still needs before it works.
+// buildSetupChecklist is pure (no DOM, no network) so it can be unit tested; everything below it
+// only gathers data the wizard already loads and renders the result. Nothing here changes settings.
+
+const SETUP_CHECKLIST_SCENE_ROLES = { starting: 'Starting', live: 'Main live', chatting: 'Just Chatting', break: 'Break', ending: 'Ending' };
+const SETUP_CHECKLIST_ROLE_TOKEN = /^role:\s*(starting|live|chatting|break|ending)$/iu;
+const SETUP_CHECKLIST_REWARD_FIELD = /(?:^r|R)ewardId$/u;
+// Features that refuse a Twitch redemption they cannot take and refund it. Twitch cannot refund a redemption that
+// skipped the reward queue (it is already fulfilled), so their rewards must keep Skip Queue off.
+const SETUP_CHECKLIST_REFUNDING_FEATURES = new Set(['thsv.first-five', 'thsv.fan-crown', 'thsv.raid-scout', 'thsv.face-filters', 'thsv.streamer-punishments', 'thsv.village-jukebox', 'thsv.viewer-spotlight']);
+const SETUP_CHECKLIST_PLATFORM_LABELS = { twitch: 'Twitch', youtube: 'YouTube', kick: 'Kick', tiktok: 'TikTok', streamlabs: 'Streamlabs', kofi: 'Ko-fi', facebook: 'Facebook' };
+
+// Recommended actions that only matter while a related setting is on, so a feature that does not
+// use that part is not asked to approve it.
+const SETUP_CHECKLIST_CONDITIONAL_ACTIONS = {
+  'THSV Addon - Raid Scout - Run Ending Ad': (settings) => settings.endBroadcastAfterRaid !== false,
+  'THSV Addon - Viewer Spotlight - Settle Reward': (settings) => settings.rewardRequestsEnabled === true,
+  'THSV Addon - Village Jukebox - Settle Twitch Reward': (settings) => settings.rewardRequestsEnabled === true,
+  'THSV Addon - Village Hydration Station - Speak': (settings) => settings.speakerEnabled === true,
+};
+
+function setupChecklistSettingValue(addOn, key) {
+  const settings = addOn.settings && typeof addOn.settings === 'object' ? addOn.settings : {};
+  if (Object.hasOwn(settings, key)) return settings[key];
+  return addOn.configurationSchema?.properties?.[key]?.default;
+}
+
+/** A setting is in use when the settings form would show it (not hidden, and its visibleWhen rule, and its controller's, hold). */
+function setupChecklistSettingInUse(addOn, key, depth = 0) {
+  // A retired setting the layout hides is never asked for.
+  if (addOn.settingsUi?.fields?.[key]?.hidden === true) return false;
+  const condition = addOn.settingsUi?.fields?.[key]?.visibleWhen;
+  if (!condition || typeof condition.field !== 'string') return true;
+  if (depth > 4) return false;
+  const current = setupChecklistSettingValue(addOn, condition.field);
+  const matches = Object.hasOwn(condition, 'equals') ? current === condition.equals : Array.isArray(condition.in) ? condition.in.includes(current) : true;
+  return matches && setupChecklistSettingInUse(addOn, condition.field, depth + 1);
+}
+
+function setupChecklistSettingLabel(addOn, key) {
+  const title = addOn.configurationSchema?.properties?.[key]?.title;
+  return typeof title === 'string' && title.trim() ? title.trim() : key;
+}
+
+/** Scene roles a setting value uses, including rows saved as JSON text; rows switched off are skipped. */
+function setupChecklistRolesIn(value, found = new Set(), depth = 0) {
+  if (depth > 5) return found;
+  if (typeof value === 'string') {
+    const match = SETUP_CHECKLIST_ROLE_TOKEN.exec(value.trim());
+    if (match) found.add(match[1].toLowerCase());
+    else if (value.trim().startsWith('{')) {
+      try { setupChecklistRolesIn(JSON.parse(value), found, depth + 1); } catch { /* Ordinary text, not a saved row. */ }
+    }
+  } else if (Array.isArray(value)) {
+    for (const item of value) setupChecklistRolesIn(item, found, depth + 1);
+  } else if (value && typeof value === 'object' && value.enabled !== false) {
+    for (const item of Object.values(value)) setupChecklistRolesIn(item, found, depth + 1);
+  }
+  return found;
+}
+
+function setupChecklistList(names) {
+  return names.length <= 1 ? (names[0] || '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
+function setupChecklistSwitchedOff(addOn) {
+  const properties = addOn.configurationSchema?.properties && typeof addOn.configurationSchema.properties === 'object' ? addOn.configurationSchema.properties : {};
+  return Object.hasOwn(properties, 'enabled') && setupChecklistSettingValue(addOn, 'enabled') === false;
+}
+
+function setupChecklistFeatureItems(addOn, input) {
+  const items = [];
+  const name = addOn.name || addOn.moduleId;
+  const settingsTarget = (field) => ({ kind: 'addon', moduleId: addOn.moduleId, tab: 'settings', section: 'configure', ...(field ? { field } : {}) });
+  const properties = addOn.configurationSchema?.properties && typeof addOn.configurationSchema.properties === 'object' ? addOn.configurationSchema.properties : {};
+
+  if ((input.restartPendingModuleIds || []).includes(addOn.moduleId)) {
+    items.push({ id: 'restart', summary: 'Restart StreamBridge to apply saved changes.', text: `Saved changes for ${name} start working after StreamBridge restarts. Restart while you are offline.`, action: { label: 'Open restart', target: { kind: 'addon', moduleId: addOn.moduleId, focus: '.addon-pending-activation' } } });
+  }
+
+  const settings = addOn.settings && typeof addOn.settings === 'object' ? addOn.settings : {};
+  const recommended = (input.recommendedActionNames?.[addOn.moduleId] || []).filter((actionName) => SETUP_CHECKLIST_CONDITIONAL_ACTIONS[actionName]?.(settings) ?? true);
+  if (Array.isArray(input.actions)) {
+    const approved = Array.isArray(addOn.approvedActionIds) ? addOn.approvedActionIds : [];
+    // Features without this permission never run actions: their actions only send events in, so they need importing but no approval.
+    const canRunActions = !Array.isArray(addOn.permissions) || addOn.permissions.includes('streamerbot.run-approved-action');
+    const notImported = [];
+    const notApproved = [];
+    for (const actionName of recommended) {
+      const live = input.actions.find((action) => action.name === actionName);
+      if (!live) notImported.push(actionName);
+      else if (canRunActions && !approved.includes(live.id)) notApproved.push(actionName);
+    }
+    const liveIds = new Set(input.actions.map((action) => action.id));
+    const missingApproved = approved.filter((id) => !liveIds.has(id));
+    if (notImported.length) items.push({ id: 'actions-not-imported', summary: `Import ${notImported.length === 1 ? '1 Streamer.bot action' : `${notImported.length} Streamer.bot actions`}.`, details: notImported, text: `Import ${name}'s Streamer.bot actions. Not found in Streamer.bot yet: ${setupChecklistList(notImported)}.`, action: { label: 'Open import', target: { kind: 'panel', panel: 'streamerbot-import', focus: '.universal-import-card' } } });
+    if (notApproved.length) items.push({ id: 'actions-not-approved', summary: `Approve ${notApproved.length === 1 ? '1 Streamer.bot action' : `${notApproved.length} Streamer.bot actions`}.`, details: notApproved, text: `Approve ${notApproved.length === 1 ? 'the recommended Streamer.bot action' : `${notApproved.length} recommended Streamer.bot actions`} for ${name}: ${setupChecklistList(notApproved)}.`, action: { label: 'Approve actions', target: { kind: 'addon', moduleId: addOn.moduleId, tab: 'streamerbot', section: 'approved-actions' } } });
+    if (missingApproved.length) items.push({ id: 'approved-actions-missing', summary: `${missingApproved.length === 1 ? '1 approved action is' : `${missingApproved.length} approved actions are`} missing. Import again.`, text: `${missingApproved.length === 1 ? 'An approved action' : `${missingApproved.length} approved actions`} for ${name} ${missingApproved.length === 1 ? 'is' : 'are'} missing from Streamer.bot. Import its Streamer.bot package again.`, action: { label: 'Open import', target: { kind: 'panel', panel: 'streamerbot-import', focus: '.universal-import-card' } } });
+  }
+
+  for (const key of Object.keys(properties).filter((property) => SETUP_CHECKLIST_REWARD_FIELD.test(property))) {
+    // A setting the feature hides (kept only so older saved settings load) is never asked for.
+    if (addOn.settingsUi?.fields?.[key]?.hidden === true) continue;
+    const platform = /^kick/iu.test(key) ? 'kick' : 'twitch';
+    if (input.platforms?.[platform]?.enabled !== true || !setupChecklistSettingInUse(addOn, key)) continue;
+    const value = setupChecklistSettingValue(addOn, key);
+    if (typeof value === 'string' && value.trim() !== '') continue;
+    items.push({ id: `reward:${key}`, summary: `Add your ${SETUP_CHECKLIST_PLATFORM_LABELS[platform]} reward ID.`, details: [`Box: "${setupChecklistSettingLabel(addOn, key)}"`], text: `Paste your ${SETUP_CHECKLIST_PLATFORM_LABELS[platform]} reward ID into "${setupChecklistSettingLabel(addOn, key)}". ${name} uses this reward, but the box is empty.`, action: { label: 'Add reward ID', target: settingsTarget(key) } });
+  }
+
+  if (SETUP_CHECKLIST_REFUNDING_FEATURES.has(addOn.moduleId) && Array.isArray(input.skipQueueRewards) && input.skipQueueRewards.length) {
+    const saved = JSON.stringify(settings);
+    const skipping = input.skipQueueRewards.filter((reward) => typeof reward?.rewardId === 'string' && reward.rewardId.length >= 8 && saved.includes(reward.rewardId));
+    if (skipping.length) {
+      const titles = skipping.map((reward) => `"${reward.title || reward.rewardId}"`);
+      items.push({ id: 'skip-queue', summary: `Turn off Skip Queue on ${skipping.length === 1 ? '1 Twitch reward' : `${skipping.length} Twitch rewards`}.`, details: titles, text: `${name} refunds a redemption it cannot take, but ${setupChecklistList(titles)} ${skipping.length === 1 ? 'skips' : 'skip'} Twitch's reward queue, so Twitch cannot refund ${skipping.length === 1 ? 'it' : 'them'}. In Streamer.bot open Platforms, Twitch, Channel Point Rewards, edit ${skipping.length === 1 ? 'the reward' : 'each reward'} and untick Skip Queue.`, action: { label: 'Open Streamer.bot', target: { kind: 'panel', panel: 'streamerbot' } } });
+    }
+  }
+
+  const roles = input.sceneRoles && typeof input.sceneRoles === 'object' ? input.sceneRoles : {};
+  const unmapped = new Map();
+  for (const key of Object.keys(settings)) {
+    if (!setupChecklistSettingInUse(addOn, key)) continue;
+    for (const role of setupChecklistRolesIn(settings[key])) {
+      if (typeof roles[role] === 'string' && roles[role].trim() !== '') continue;
+      if (!unmapped.has(role)) unmapped.set(role, []);
+      unmapped.get(role).push(`"${setupChecklistSettingLabel(addOn, key)}"`);
+    }
+  }
+  for (const [role, labels] of unmapped) {
+    items.push({ id: `scene-role:${role}`, summary: `Pick your ${SETUP_CHECKLIST_SCENE_ROLES[role]} scene under Scene roles.`, details: labels, text: `Choose your ${SETUP_CHECKLIST_SCENE_ROLES[role]} scene under Scene roles. ${name} uses role:${role} in ${setupChecklistList(labels)}, but that role has no scene yet.`, action: { label: 'Map scene role', target: { kind: 'panel', panel: 'addons', focus: '#scene-roles' } } });
+  }
+  return items;
+}
+
+/**
+ * Builds the checklist from data the wizard already has.
+ * input: { addOns, actions (live Streamer.bot actions, or null when they could not be read),
+ *   recommendedActionNames: { moduleId: names[] }, platforms, sceneRoles, restartRequired,
+ *   restartPendingModuleIds, stagedChangeCount, connections: { streamerBot, platforms: [{ name, state }] } | null,
+ *   skipQueueRewards: [{ rewardId, title }] (Twitch rewards seen skipping the reward queue) }
+ */
+function buildSetupChecklist(input = {}) {
+  const general = [];
+  if (input.stagedChangeCount > 0) general.push({ id: 'staged', summary: `Save ${input.stagedChangeCount === 1 ? '1 pending change' : `${input.stagedChangeCount} pending changes`} with backup.`, text: `You have ${input.stagedChangeCount === 1 ? 'a change' : `${input.stagedChangeCount} changes`} that ${input.stagedChangeCount === 1 ? 'is' : 'are'} not saved yet. Save it with backup on the Overview page.`, action: { label: 'Open pending changes', target: { kind: 'panel', panel: 'overview', focus: '#commit' } } });
+  if (input.restartRequired === true) general.push({ id: 'restart', summary: 'Restart StreamBridge to apply saved settings.', text: 'Saved settings start working after StreamBridge restarts. Restart while you are offline.', action: { label: 'Restart StreamBridge', target: { kind: 'restart' } } });
+  // A brand-new install has no streaming platform on yet; that comes first, before any extension.
+  const platformSettings = input.platforms && typeof input.platforms === 'object' ? input.platforms : {};
+  if (Object.keys(platformSettings).length > 0 && !['twitch', 'youtube', 'kick', 'tiktok'].some((name) => platformSettings[name]?.enabled === true)) {
+    general.push({ id: 'platforms', summary: 'Turn on the platforms you stream to.', text: 'No streaming platform is turned on yet. Turn on Twitch, YouTube, Kick or TikTok under Platforms (Facebook has its own Connect button there).', action: { label: 'Open Platforms', target: { kind: 'panel', panel: 'platforms' } } });
+  }
+  const connections = input.connections;
+  if (connections && connections.streamerBot !== 'connected') general.push({ id: 'streamerbot', summary: 'Connect Streamer.bot (start it with its WebSocket server on).', text: 'StreamBridge is not connected to Streamer.bot. Start Streamer.bot and make sure its WebSocket server is on.', action: { label: 'Open Streamer.bot', target: { kind: 'panel', panel: 'streamerbot' } } });
+  for (const platform of connections?.platforms || []) {
+    if (platform.state === 'connected' || platform.state === 'disabled') continue;
+    const label = SETUP_CHECKLIST_PLATFORM_LABELS[platform.name] || platform.name;
+    general.push({ id: `platform:${platform.name}`, summary: `${label} is on but not connected.`, text: `${label} is turned on but not connected. Check that your ${label} account is connected in Streamer.bot.`, action: { label: 'Open connection check', target: { kind: 'panel', panel: 'overview', focus: '#connection-center' } } });
+  }
+
+  // Only features that are actually on are checked: a component that is off, or whose own "Enable" switch is off,
+  // is something the creator chose not to use, so it never shows up as a problem here.
+  const enabled = (Array.isArray(input.addOns) ? input.addOns : []).filter((addOn) => addOn && addOn.enabled === true && addOn.health === 'installed' && !setupChecklistSwitchedOff(addOn));
+  if (!Array.isArray(input.actions) && enabled.some((addOn) => (input.recommendedActionNames?.[addOn.moduleId] || []).length > 0)) {
+    general.push({ id: 'actions-unchecked', text: 'Streamer.bot actions could not be checked. Start Streamer.bot, then press Inspect actions so this list can confirm your feature actions.', action: { label: 'Open Streamer.bot', target: { kind: 'panel', panel: 'streamerbot', focus: '#inspect' } } });
+  }
+
+  const features = enabled
+    .map((addOn) => ({ moduleId: addOn.moduleId, name: addOn.name || addOn.moduleId, items: setupChecklistFeatureItems(addOn, input) }))
+    .sort((left, right) => Number(right.items.length > 0) - Number(left.items.length > 0) || left.name.localeCompare(right.name));
+  const openCount = general.length + features.reduce((total, feature) => total + feature.items.length, 0);
+  return { general, features, openCount };
+}
+
+// ---------- Browser wiring (skipped when the pure logic is loaded by unit tests) ----------
+
+const setupChecklistTargets = [];
+let setupChecklistFamilies = [];
+let setupChecklistLoading = null;
+
+function renderSetupChecklistBadge(count) {
+  const button = document.querySelector('[data-view="setup-checklist"]');
+  if (!button) return;
+  // The count is drawn by CSS and announced as the button's description, so its name stays "Setup checklist".
+  if (Number.isInteger(count) && count > 0) {
+    button.dataset.count = String(count);
+    button.title = `${count} open item${count === 1 ? '' : 's'}`;
+  } else {
+    delete button.dataset.count;
+    button.title = count === 0 ? 'Everything is ready' : '';
+  }
+}
+
+function renderSetupChecklistItem(item) {
+  const index = setupChecklistTargets.push(item.action.target) - 1;
+  const details = Array.isArray(item.details) && item.details.length
+    ? `<details class="setup-checklist-details"><summary>Show ${item.details.length === 1 ? 'details' : `all ${item.details.length}`}</summary><ul>${item.details.map((detail) => `<li>${safe(detail)}</li>`).join('')}</ul></details>`
+    : '';
+  // The short summary is shown; the full sentence stays available as a tooltip.
+  return `<li class="setup-checklist-item" data-checklist-item="${safe(item.id)}"><span class="setup-checklist-summary" title="${safe(item.text)}">${safe(item.summary || item.text)}</span>${details}<button type="button" class="ghost compact" data-setup-checklist-go="${index}">${safe(item.action.label)}</button></li>`;
+}
+
+function renderSetupChecklist(result) {
+  const content = byId('setup-checklist-content');
+  if (!content) return;
+  setupChecklistTargets.length = 0;
+  const general = result.general.length
+    ? `<article class="setup-checklist-card needs-attention" data-checklist-feature="general"><div class="setup-checklist-card-heading"><h3>Connections and saving</h3><span class="status-chip status-warning">${safe(String(result.general.length))} to do</span></div><ul>${result.general.map(renderSetupChecklistItem).join('')}</ul></article>`
+    : '';
+  // Only features that still need something get a card. Ready ones are named once in a short line underneath.
+  const features = result.features.filter((feature) => feature.items.length).map((feature) => `<article class="setup-checklist-card needs-attention" data-checklist-feature="${safe(feature.moduleId)}"><div class="setup-checklist-card-heading"><h3>${safe(feature.name)}</h3><span class="status-chip status-warning">${safe(String(feature.items.length))} to do</span></div><ul>${feature.items.map(renderSetupChecklistItem).join('')}</ul></article>`).join('');
+  const ready = result.features.filter((feature) => !feature.items.length).map((feature) => feature.name);
+  const readyLine = ready.length ? `<p class="setup-checklist-ready" data-checklist-ready><span class="status-chip status-ready">Ready</span> ${safe(ready.join(', '))}</p>` : '';
+  content.innerHTML = general || features
+    ? `<div class="setup-checklist-grid">${general}${features}</div>${readyLine}`
+    : result.features.length
+      ? `<p class="notice">Everything you turned on is set up.</p>${readyLine}`
+      : '<p class="notice">No extensions are turned on yet. Turn on the features you want under Extensions, then come back here.</p>';
+}
+
+async function loadSetupChecklist() {
+  if (setupChecklistLoading) return setupChecklistLoading;
+  const status = byId('setup-checklist-state');
+  setupChecklistLoading = (async () => {
+    status?.setAttribute('aria-busy', 'true');
+    if (status) { status.hidden = false; status.textContent = 'Checking your setup…'; }
+    try {
+      const [addOnResult, inspection, readiness, runtime, rewardQueue] = await Promise.all([
+        api('/wizard/api/addons'),
+        inspectStreamerBot().catch(() => null),
+        api('/wizard/api/readiness').catch(() => null),
+        fetchAddOnRuntimeDiagnostics(),
+        api('/wizard/api/reward-queue').catch(() => null),
+      ]);
+      const actionsAvailable = inspection?.available === true && Array.isArray(inspection.actions);
+      // Share the scan with the add-on approval step, exactly as its own automatic scan does.
+      if (actionsAvailable && !state.liveActions.length) items('actions', inspection.actions, 'action');
+      const addOns = Array.isArray(addOnResult.addOns) ? addOnResult.addOns : [];
+      setupChecklistFamilies = Array.isArray(addOnResult.featureFamilies) ? addOnResult.featureFamilies : [];
+      const pendingRestart = readAddOnRestartState();
+      const restartIsStale = Boolean(pendingRestart.startedAt && runtime?.startedAt && pendingRestart.startedAt !== runtime.startedAt);
+      const output = (readiness?.readiness?.outputs || []).find((candidate) => candidate.name === 'streamerbot');
+      const result = buildSetupChecklist({
+        addOns,
+        actions: actionsAvailable ? inspection.actions : null,
+        recommendedActionNames: Object.fromEntries(addOns.map((addOn) => [addOn.moduleId, recommendedActionNames(addOn)])),
+        platforms: state.overview?.configuration?.platforms || {},
+        sceneRoles: savedSceneRoles(),
+        restartRequired: (readiness?.configuration || state.overview?.configuration?.activation)?.restartRequired === true,
+        restartPendingModuleIds: restartIsStale ? [] : pendingRestart.moduleIds,
+        stagedChangeCount: state.draft?.status === 'draft' ? (state.draft.stagedChanges || []).length : 0,
+        connections: readiness ? { streamerBot: output?.state || 'unknown', platforms: (readiness.readiness?.adapters || []).filter((adapter) => connectionPlatformNames.has(adapter.name)) } : null,
+        skipQueueRewards: Array.isArray(rewardQueue?.skipQueueRewards) ? rewardQueue.skipQueueRewards : [],
+      });
+      renderSetupChecklist(result);
+      renderSetupChecklistBadge(result.openCount);
+      // The status line is only for open items; when nothing is open the notice below says it once.
+      if (status) status.hidden = !result.openCount;
+      if (status) status.textContent = result.openCount ? `${result.openCount} thing${result.openCount === 1 ? '' : 's'} left to set up. Each button opens the fix.` : result.features.length ? 'Everything you turned on is ready.' : 'Nothing to check yet.';
+      return result;
+    } catch (error) {
+      renderSetupChecklistBadge(null);
+      if (status) status.hidden = false;
+      if (status) status.textContent = `The checklist could not load: ${error.message}. Nothing was changed. Confirm StreamBridge is running, then press Check again.`;
+      return null;
+    } finally {
+      status?.removeAttribute('aria-busy');
+      setupChecklistLoading = null;
+    }
+  })();
+  return setupChecklistLoading;
+}
+
+function revealSetupChecklistTarget(element) {
+  if (!element) return;
+  for (let details = element.closest('details'); details; details = details.parentElement?.closest('details')) details.open = true;
+  element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (!element.matches('input, select, textarea, button, a[href], [tabindex]')) element.tabIndex = -1;
+  element.focus({ preventScroll: true });
+}
+
+async function openSetupChecklistTarget(target) {
+  if (!target) return;
+  // The restart item restarts straight away (with the usual confirmation) instead of opening another page.
+  if (target.kind === 'restart') { document.getElementById('restart-bridge')?.click(); return; }
+  if (target.kind === 'panel') {
+    // Pages get split over time, so follow the field to whichever page holds it now.
+    const field = target.focus ? document.querySelector(`[data-panel] ${target.focus}`) : null;
+    const panel = field?.closest('[data-panel]')?.dataset.panel ?? target.panel;
+    if (!activatePanel(panel)) return;
+    if (panel === 'addons' || panel === 'scene-roles') await loadAddOns();
+    if (field) revealSetupChecklistTarget(field);
+    return;
+  }
+  const panel = 'addons';
+  state.selectedAddOnId = target.moduleId;
+  if (target.tab) rememberAddOnTab(target.moduleId, target.tab);
+  activatePanel(panel);
+  await loadAddOns();
+  const root = document.querySelector(`[data-panel="${panel}"]`);
+  if (target.focus) { revealSetupChecklistTarget(root?.querySelector(target.focus)); return; }
+  const card = root?.querySelector(`[data-addon-id="${CSS.escape(target.moduleId)}"]`);
+  if (!card) return;
+  const section = target.section ? card.querySelector(`[data-disclosure-key="${CSS.escape(`addon:${target.moduleId}:${target.section}`)}"]`) : null;
+  if (section) section.open = true;
+  const field = target.field ? card.querySelector(`[name="${CSS.escape(target.field)}"]`) : null;
+  revealSetupChecklistTarget(field || section?.querySelector('summary') || card);
+}
+
+if (typeof document !== 'undefined') {
+  byId('refresh-setup-checklist')?.addEventListener('click', () => void loadSetupChecklist());
+  document.querySelector('[data-view="setup-checklist"]')?.addEventListener('click', () => void loadSetupChecklist());
+  byId('setup-checklist-content')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-setup-checklist-go]');
+    if (button) void openSetupChecklistTarget(setupChecklistTargets[Number(button.dataset.setupChecklistGo)]);
+  });
+  document.addEventListener('wizard:authenticated', () => void loadSetupChecklist());
+}
