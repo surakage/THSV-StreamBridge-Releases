@@ -1,6 +1,6 @@
 # Local Clock
 
-**Module:** `thsv.local-clock` · **Version:** `4.1.118` · **Built in (extension)**
+**Module:** `thsv.local-clock` · **Version:** `4.1.119` · **Built in (extension)**
 
 Shows the creator's local time and date on stream as a text line, a digital clock, or a round analog clock, with an optional chat command.
 
@@ -48,7 +48,7 @@ Change these in the wizard. Defaults are what a fresh install uses.
 | Enable Local Clock |  | Off |
 | Clock style | Text line (SUN 19 OCT 2025 10:44:01 AM), a digital clock, or a round analog clock. | `text` |
 | Time zone (optional) | Leave empty to use this PC's time. Or type a zone such as America/Chicago, Europe/London or Asia/Tokyo. | (blank) |
-| Hours |  | `12` |
+| Hour format |  | `12` |
 | Show seconds |  | On |
 | Show the date |  | On |
 | Label (optional) | A small line above the clock, for example My local time. | (blank) |
